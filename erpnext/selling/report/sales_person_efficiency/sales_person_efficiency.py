@@ -9,22 +9,23 @@ def execute(filters=None):
 		filters = {}
 
 	columns, month_keys = get_columns(filters)
-	data, totals = get_data(filters, month_keys)
-
-	# Add grand total row
-	if data:
-		grand_total_row = {"sales_person": "Total"}
-		for col in columns:
-			fieldname = col.get("fieldname")
-			if fieldname and fieldname != "sales_person":
-				grand_total_row[fieldname] = sum(row.get(fieldname, 0) for row in data)
-		data.append(grand_total_row)
+	data = prepare_report_data(filters, month_keys)
 
 	return columns, data
 
 
 def get_columns(filters):
-	columns = [{
+	base_columns = get_base_column()
+	from_year, to_year, from_month, to_month = extract_date_filters(filters)
+	month_keys = get_month_keys(from_year, to_year, from_month, to_month)
+	month_columns = build_monthly_columns(month_keys)
+	final_column = get_final_total_column()
+
+	return base_columns + month_columns + [final_column], month_keys
+
+
+def get_base_column():
+	return [{
 		"label": _("Sales Person"),
 		"fieldname": "sales_person",
 		"fieldtype": "Link",
@@ -32,39 +33,56 @@ def get_columns(filters):
 		"width": 180
 	}]
 
+
+def extract_date_filters(filters):
 	from_year = int(filters.get("from_year"))
 	to_year = int(filters.get("to_year"))
 	from_month = list(calendar.month_name).index(filters.get("from_month"))
 	to_month = list(calendar.month_name).index(filters.get("to_month"))
+	return from_year, to_year, from_month, to_month
 
-	month_keys = []  # To track order and keys
+
+def get_month_keys(from_year, to_year, from_month, to_month):
+	month_keys = []
 	for year in range(from_year, to_year + 1):
-		start_month = from_month if year == from_year else 1
-		end_month = to_month if year == to_year else 12
-		for month in range(start_month, end_month + 1):
-			label = f"{calendar.month_name[month]} {year}"
-			slug = f"{calendar.month_name[month].lower()}_{year}"
-			month_keys.append(slug)
+		start = from_month if year == from_year else 1
+		end = to_month if year == to_year else 12
+		for month in range(start, end + 1):
+			month_keys.append(f"{calendar.month_name[month].lower()}_{year}")
+	return month_keys
 
-			columns.extend([
-				{"label": f"{label} - On Time", "fieldname": f"{slug}_on_time", "fieldtype": "Int", "width": 181},
-				{"label": f"{label} - Delay ≤ 4", "fieldname": f"{slug}_delay_short", "fieldtype": "Int", "width": 192},
-				{"label": f"{label} - Delay > 4", "fieldname": f"{slug}_delay_long", "fieldtype": "Int", "width": 192},
-				{"label": f"{label} - Total", "fieldname": f"{slug}_monthly_total", "fieldtype": "Int", "width": 180},
-			])
 
-	# Final cumulative total column
-	columns.append({
+def build_monthly_columns(month_keys):
+	columns = []
+	for key in month_keys:
+		month, year = key.split("_")
+		label = f"{month.title()} {year}"
+		columns.extend([
+			{"label": f"{label} - On Time", "fieldname": f"{key}_on_time", "fieldtype": "Int", "width": 181},
+			{"label": f"{label} - Delay ≤ 4", "fieldname": f"{key}_delay_short", "fieldtype": "Int", "width": 192},
+			{"label": f"{label} - Delay > 4", "fieldname": f"{key}_delay_long", "fieldtype": "Int", "width": 192},
+			{"label": f"{label} - Total", "fieldname": f"{key}_monthly_total", "fieldtype": "Int", "width": 180},
+		])
+	return columns
+
+
+def get_final_total_column():
+	return {
 		"label": "Overall Deliveries",
 		"fieldname": "Overall_deliveries",
 		"fieldtype": "Int",
 		"width": 140
-	})
+	}
 
-	return columns, month_keys
+def prepare_report_data(filters, month_keys):
+	raw_data = fetch_delivery_data(filters)
+	summary = aggregate_delivery_data(raw_data)
+	data = build_data_rows(summary, month_keys)
+	append_grand_total_row(data)
+	return data
 
 
-def get_data(filters, month_keys):
+def fetch_delivery_data(filters):
 	query = """
 		SELECT 
 			st.sales_person,
@@ -94,40 +112,61 @@ def get_data(filters, month_keys):
 	if conditions:
 		query += " AND " + " AND ".join(conditions)
 
-	rows = frappe.db.sql(query, values, as_dict=1)
+	return frappe.db.sql(query, values, as_dict=True)
 
-	summary = defaultdict(lambda: defaultdict(lambda: [0, 0, 0]))  # {sales_person: {month_key: [on_time, short, long]}}
+
+def aggregate_delivery_data(rows):
+	summary = {}  # plain dictionary
 
 	for row in rows:
-		if not row.sales_person or not row.month or not row.year:
+		if not (row.sales_person and row.month and row.year):
 			continue
+
+		sales_person = row.sales_person
 		key = f"{calendar.month_name[row.month].lower()}_{row.year}"
+
+		if sales_person not in summary:
+			summary[sales_person] = {}
+
+		if key not in summary[sales_person]:
+			summary[sales_person][key] = [0, 0, 0]
+			
 		if row.delay <= 0:
-			summary[row.sales_person][key][0] += 1
+			summary[sales_person][key][0] += 1
 		elif row.delay <= 4:
-			summary[row.sales_person][key][1] += 1
+			summary[sales_person][key][1] += 1
 		else:
-			summary[row.sales_person][key][2] += 1
+			summary[sales_person][key][2] += 1
+	return summary
 
+
+def build_data_rows(summary, month_keys):
 	data = []
-
 	for sp, months in summary.items():
 		row = {"sales_person": sp}
-		Overall_deliveries = 0
+		overall = 0
 		for key in month_keys:
-			on_time = months.get(key, [0, 0, 0])[0]
-			delay_short = months.get(key, [0, 0, 0])[1]
-			delay_long = months.get(key, [0, 0, 0])[2]
-			monthly_total = on_time + delay_short + delay_long
-
-			row[f"{key}_on_time"] = on_time
-			row[f"{key}_delay_short"] = delay_short
-			row[f"{key}_delay_long"] = delay_long
-			row[f"{key}_monthly_total"] = monthly_total
-
-			Overall_deliveries += monthly_total
-
-		row["Overall_deliveries"] = Overall_deliveries	
+			on_time, short, long = months.get(key, [0, 0, 0])
+			total = on_time + short + long
+			row.update({
+				f"{key}_on_time": on_time,
+				f"{key}_delay_short": short,
+				f"{key}_delay_long": long,
+				f"{key}_monthly_total": total
+			})
+			overall += total
+		row["Overall_deliveries"] = overall
 		data.append(row)
+	return data
 
-	return data, summary
+
+def append_grand_total_row(data):
+	if not data:
+		return
+
+	grand_total = {"sales_person": "Total"}
+	for row in data:
+		for key, value in row.items():
+			if key != "sales_person":
+				grand_total[key] = grand_total.get(key, 0) + value
+	data.append(grand_total)
