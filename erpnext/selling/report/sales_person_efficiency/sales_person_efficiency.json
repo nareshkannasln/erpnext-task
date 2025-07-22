@@ -1,5 +1,5 @@
 {
- "add_total_row": 0,
+ "add_total_row": 1,
  "add_translate_data": 0,
  "columns": [],
  "creation": "2025-07-18 15:56:58.723766",
@@ -10,7 +10,7 @@
  "idx": 0,
  "is_standard": "Yes",
  "letterhead": null,
- "modified": "2025-07-18 16:03:15.618173",
+ "modified": "2025-07-22 13:25:30.149151",
  "modified_by": "Administrator",
  "module": "Selling",
  "name": "Sales Person Efficiency",

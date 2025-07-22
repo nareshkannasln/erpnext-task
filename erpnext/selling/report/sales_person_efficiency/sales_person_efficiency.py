@@ -1,8 +1,9 @@
 import frappe
 from frappe import _
-from collections import defaultdict
+# from collections import defaultdict
 import calendar
-
+from frappe.query_builder import DocType
+from frappe.query_builder.functions import Extract, DateDiff
 
 def execute(filters=None):
 	if not filters:
@@ -78,8 +79,13 @@ def prepare_report_data(filters, month_keys):
 	raw_data = fetch_delivery_data(filters)
 	summary = aggregate_delivery_data(raw_data)
 	data = build_data_rows(summary, month_keys)
-	append_grand_total_row(data)
+	# append_grand_total_row(data)
 	return data
+
+
+
+
+##quey to fetch delivery data
 
 
 def fetch_delivery_data(filters):
@@ -115,6 +121,43 @@ def fetch_delivery_data(filters):
 	return frappe.db.sql(query, values, as_dict=True)
 
 
+# #### By using query builder
+
+# def fetch_delivery_data(filters):
+# 	dn = DocType("Delivery Note")
+# 	dni = DocType("Delivery Note Item")
+# 	soi = DocType("Sales Order Item")
+# 	so = DocType("Sales Order")
+# 	st = DocType("Sales Team")
+
+# 	query = (
+# 		frappe.qb
+# 		.from_(dn)
+# 		.join(dni).on(dni.parent == dn.name)
+# 		.join(soi).on(soi.name == dni.so_detail)
+# 		.join(so).on(so.name == soi.parent)
+# 		.join(st).on(st.parent == so.name)
+# 		.select(
+# 			st.sales_person.as_("sales_person"),
+# 			Extract("month", dn.posting_date).as_("month"),
+# 			Extract("year", dn.posting_date).as_("year"),
+# 			DateDiff(soi.delivery_date, dn.posting_date).as_("delay"),
+# 		)
+# 		.where(
+# 			(dn.docstatus == 1)
+# 			& (so.docstatus == 1)
+# 			& (st.parenttype == "Sales Order")
+# 		)
+# 	)
+
+# 	if filters.get("sales_person"):
+# 		query = query.where(st.sales_person == filters.get("sales_person"))
+
+# 	if filters.get("customer"):
+# 		query = query.where(so.customer == filters.get("customer"))
+
+# 	return query.run(as_dict=True)
+
 def aggregate_delivery_data(rows):
 	summary = {}  # plain dictionary
 
@@ -130,7 +173,7 @@ def aggregate_delivery_data(rows):
 
 		if key not in summary[sales_person]:
 			summary[sales_person][key] = [0, 0, 0]
-			
+
 		if row.delay <= 0:
 			summary[sales_person][key][0] += 1
 		elif row.delay <= 4:
@@ -140,33 +183,78 @@ def aggregate_delivery_data(rows):
 	return summary
 
 
+
+##########NOT USED IN THIS REPORT, BUT LEFT FOR REFERENCE ##########
+
+# def build_data_rows(summary, month_keys):
+# 	data = []
+# 	for sp, months in summary.items():
+# 		row = {"sales_person": sp}
+# 		overall = 0
+# 		for key in month_keys:
+# 			on_time, short, long = months.get(key, [0, 0, 0])
+# 			total = on_time + short + long
+# 			row.update({
+# 				f"{key}_on_time": on_time,
+# 				f"{key}_delay_short": short,
+# 				f"{key}_delay_long": long,
+# 				f"{key}_monthly_total": total
+# 			})
+# 			overall += total
+# 		row["Overall_deliveries"] = overall
+# 		data.append(row)
+# 	return data
+
+
 def build_data_rows(summary, month_keys):
 	data = []
+
 	for sp, months in summary.items():
 		row = {"sales_person": sp}
 		overall = 0
+		sort = 0  
+
 		for key in month_keys:
 			on_time, short, long = months.get(key, [0, 0, 0])
 			total = on_time + short + long
+
 			row.update({
 				f"{key}_on_time": on_time,
 				f"{key}_delay_short": short,
 				f"{key}_delay_long": long,
 				f"{key}_monthly_total": total
 			})
+
 			overall += total
+			sort += on_time + short
+			
+
 		row["Overall_deliveries"] = overall
+		row["sort"] = sort 
+
 		data.append(row)
+	data.sort(key=lambda r: r.get("sort", 0), reverse=True)
+
+	for row in data:
+		row.pop("sort", None)
+
 	return data
 
 
-def append_grand_total_row(data):
-	if not data:
-		return
 
-	grand_total = {"sales_person": "Total"}
-	for row in data:
-		for key, value in row.items():
-			if key != "sales_person":
-				grand_total[key] = grand_total.get(key, 0) + value
-	data.append(grand_total)
+####NOT USED IN THIS REPORT, BUT LEFT FOR REFERENCE ##########
+
+# def append_grand_total_row(data):
+# 	if not data:
+# 		return
+
+# 	grand_total = {"sales_person": "Total"}
+# 	for row in data:
+# 		for key, value in row.items():
+# 			if key != "sales_person":
+# 				grand_total[key] = grand_total.get(key, 0) + value
+# 	data.append(grand_total)
+
+
+
+
